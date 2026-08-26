@@ -12,12 +12,15 @@ public sealed class MobyReader
     private readonly FileManager _fileManager;
     private readonly MaterialReader _materialReader;
     private readonly DebugReader _debugReader;
+    private readonly IReadOnlyList<Assets.Animations.AnimationClip> _animations;
 
-    public MobyReader(FileManager fileManager, MaterialReader materialReader, DebugReader debugReader)
+    public MobyReader(FileManager fileManager, MaterialReader materialReader, DebugReader debugReader,
+        IReadOnlyList<Assets.Animations.AnimationClip>? animations = null)
     {
         _fileManager = fileManager ?? throw new ArgumentNullException(nameof(fileManager));
         _materialReader = materialReader ?? throw new ArgumentNullException(nameof(materialReader));
         _debugReader = debugReader ?? throw new ArgumentNullException(nameof(debugReader));
+        _animations = animations ?? [];
     }
 
     public Dictionary<ulong, Assets.Mobys.Moby> ReadAllMobys() => _fileManager.isOld ? ReadMobysOld() : ReadMobysNew();
@@ -97,13 +100,27 @@ public sealed class MobyReader
 
         var name = _debugReader.GetMobyPrototypeName(tuid) ?? $"Moby_{tuid:X}";
 
+        // Resolve this Moby's OWN animation set (see Objects.Moby.AnimationIndices /
+        // MobyAnimationResolver) into actual clips, bounds-checked against the level's already-
+        // loaded 0xF000 list - a stale/out-of-range index (shouldn't happen given the resolver's
+        // own bounds check, but this is cheap insurance) is skipped rather than throwing.
+        List<Assets.Animations.AnimationClip>? animations = null;
+        if (legacyMoby.AnimationIndices.Count > 0)
+        {
+            animations = new List<Assets.Animations.AnimationClip>(legacyMoby.AnimationIndices.Count);
+            foreach (int i in legacyMoby.AnimationIndices)
+                if (i >= 0 && i < _animations.Count)
+                    animations.Add(_animations[i]);
+        }
+
         return new Assets.Mobys.Moby(
             id: tuid,
             bangles: bangles,
             scale: legacyMoby.Scale,
             name: name,
             boundingSphereCalculator: () => (boundingCenter, boundingRadius),
-            skeleton: ConvertSkeleton(legacyMoby.Skeleton));
+            skeleton: ConvertSkeleton(legacyMoby.Skeleton),
+            animations: animations);
     }
 
     /// <summary>Raw MobySkeleton (bone hierarchy + tms0/tms1 bind matrices, both engines share the
@@ -125,7 +142,15 @@ public sealed class MobyReader
                 rootIndex = i;
         }
 
-        return new Assets.Mobys.Skeleton(bones, rootIndex);
+        // Animation position/scale tracks are quantized against these shifts (main.dat 0xD300
+        // +0x12/+0x10, single bytes - see MobySkeleton.cs) - see AnimationPlayer.SamplePose.
+        // Clamped defensively to keep a corrupt/unread shift from producing a divide-by-zero scale
+        // instead of a merely-wrong one; real observed values are always 0-15 (scaleShift=4
+        // constant, translationShift varies 1-9 across the metropolis level's skeletons).
+        float positionScale = 1f / (0x8000 >> Math.Clamp((int)skeleton.translationShift, 0, 15));
+        float scaleScale = 1f / (0x8000 >> Math.Clamp((int)skeleton.scaleShift, 0, 15));
+
+        return new Assets.Mobys.Skeleton(bones, rootIndex, positionScale, scaleScale);
     }
 
     private void ReadMobyBanglesMeshes(Objects.Moby moby)

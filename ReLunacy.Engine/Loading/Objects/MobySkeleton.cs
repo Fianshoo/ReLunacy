@@ -26,8 +26,17 @@ public record struct MobySkeleton : ILunaSerializable
     [FileOffset(0x04), Reference(nameof(NumBones))] public MobyBone[] bones;
     [FileOffset(0x08)] public uint tms0Pointer;
     [FileOffset(0x0C)] public uint tms1Pointer;
-    [FileOffset(0x10)] public ushort scaleShift;
-    [FileOffset(0x12)] public ushort translationShift;
+    // Verified against real main.dat (metropolis level, 201 skeletons scanned): these are single
+    // BYTES, not ushorts — a ushort read here always returns 0x0400 (1024) because the byte right
+    // after each shift is always 0 padding, which silently produced a bogus "shift" that a
+    // defensive Math.Clamp(0,15) in MobyReader.ConvertSkeleton then collapsed to posScale=1.0 (no
+    // scaling at all) instead of the correct ~1/2048. scaleShift is constant (4) across every
+    // skeleton observed; translationShift varies per-skeleton (seen: 1,4,6,7,8,9) — a sane 0-15
+    // shift range, confirming the byte read is right and the ushort read was the bug.
+    [FileOffset(0x10)] public byte scaleShift;
+    [FileOffset(0x11)] public byte scaleShiftPad;
+    [FileOffset(0x12)] public byte translationShift;
+    [FileOffset(0x13)] public byte translationShiftPad;
     [FileOffset(0x14)] public uint spuRefPoseBufferPointer;
     [FileOffset(0x18)] public uint unkOffsetPointer;
 

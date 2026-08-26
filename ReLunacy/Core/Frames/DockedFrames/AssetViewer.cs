@@ -3,9 +3,11 @@ using Rectangle = System.Drawing.Rectangle;
 using Point = System.Drawing.Point;
 using Bliss.CSharp.Camera.Dim3;
 using Bliss.CSharp.Geometry.Meshes;
+using Bliss.CSharp.Geometry.Meshes.Data;
 using Bliss.CSharp.Geometry.Models;
 using Bliss.CSharp.Graphics.Rendering.Renderers;
 using Bliss.CSharp.Graphics.Rendering.Renderers.Forward;
+using Bliss.CSharp.Graphics.VertexTypes;
 using Bliss.CSharp.Interact;
 using Bliss.CSharp.Interact.Mice;
 using Bliss.CSharp.Materials;
@@ -13,6 +15,7 @@ using Bliss.CSharp.Textures;
 using Bliss.CSharp.Transformations;
 using ReLunacy.Core.Frames.Modals;
 using ReLunacy.Core.Selection;
+using ReLunacy.Engine.Assets.Animations;
 using ReLunacy.Engine.Assets.Interfaces;
 using ReLunacy.Engine.Assets.Mobys;
 using ReLunacy.Engine.Assets.Ties;
@@ -139,6 +142,7 @@ public class AssetViewer : DockedFrame, ILevelListener
     public readonly Cam3D Camera;
     private Renderable? cubeRenderable;
     private bool showSkeleton = true;
+
     private bool pickRequested;
 
     // Picking granularity for this viewport only (never fed into the shared scene-picking used
@@ -212,8 +216,30 @@ public class AssetViewer : DockedFrame, ILevelListener
             exportNameOverride = "";
             IsDirty = true;
             RebuildSelectedAssetMaterials();
+            _animationPlayer.SetClip(null);
+            _animationClipSearch = "";
+            DisposeSkinnedMeshes();
         }
     }
+
+    private void DisposeSkinnedMeshes()
+    {
+        foreach (var (mesh, _) in _skinnedMeshes) mesh.Dispose();
+        _skinnedMeshes.Clear();
+    }
+
+    // Animation playback state for the currently selected Moby's preview. One player is reused
+    // across selections (SetClip(null) above resets it whenever the selection changes) rather than
+    // recreated, since it carries no per-clip unmanaged resources.
+    private readonly ReLunacy.Engine.Assets.Animations.AnimationPlayer _animationPlayer = new();
+    private string _animationClipSearch = "";
+    private bool _animationDebugExpanded;
+
+    // Rebuilt every frame while a clip is assigned and not sitting exactly at the bind pose (see
+    // Render) — CPU-skinned Vertex3D meshes, one per (bangle, mesh) pair of the selected Moby, kept
+    // separate from cachedRenderables' static path so a plain (non-animated) Moby preview never pays
+    // for this. Disposed and cleared whenever the clip is cleared or the selection changes.
+    private readonly List<(Mesh<Vertex3D> mesh, BasicMeshData data)> _skinnedMeshes = [];
 
     private TieAsset? selectedTieAsset;
     public TieAsset? SelectedTieAsset
@@ -313,6 +339,8 @@ public class AssetViewer : DockedFrame, ILevelListener
         selectedUFragAsset = null;
         selectedMesh = null;
         RebuildSelectedAssetMaterials();
+        _animationPlayer.SetClip(null);
+        DisposeSkinnedMeshes();
         mobyAssets.Clear();
         tieAssets.Clear();
         // UFragAsset holds an IUFrag owned by the level being torn down, and the preview borrows the
@@ -725,6 +753,7 @@ public class AssetViewer : DockedFrame, ILevelListener
                     ImGui.EndTabItem();
                 }
 
+
                 ImGui.EndTabBar();
             }
         }
@@ -771,6 +800,22 @@ public class AssetViewer : DockedFrame, ILevelListener
             }
             else
             {
+                // Animation playback: advance time and, while a clip is assigned, re-skin this
+                // Moby's preview meshes every frame regardless of IsDirty (the pose changes every
+                // frame even though nothing about the SELECTION changed) - UpdateSkinnedVertices
+                // owns cachedRenderables entirely for this case, including (re)building it when
+                // stale. Stopped/no-clip falls through to the plain static Model path below exactly
+                // as before - zero overhead and zero behaviour change for the common case.
+                bool animatingMoby = selectedMobyAsset != null && _animationPlayer.Clip != null
+                    && selectedMobyAsset.Value.Moby.Skeleton != null;
+                if (selectedMobyAsset != null && selectedMobyAsset.Value.Moby.Skeleton != null)
+                    _animationPlayer.Update((float)deltaTime);
+                if (animatingMoby)
+                {
+                    UpdateSkinnedVertices(selectedMobyAsset!.Value, selectedMobyAsset.Value.Moby.Skeleton!, forceRebuild: IsDirty);
+                    IsDirty = false;
+                }
+
                 if (IsDirty)
                 {
                     cachedRenderables.Clear();
@@ -823,7 +868,7 @@ public class AssetViewer : DockedFrame, ILevelListener
                 renderer.Draw(commandList, renderTexture.Framebuffer.OutputDescription);
 
                 if (showSkeleton && selectedMobyAsset?.Moby.Skeleton is { } skeleton)
-                    DrawSkeleton(skeleton, immediateRenderer);
+                    DrawSkeleton(skeleton, immediateRenderer, animatingMoby ? _animationPlayer.LastAnimatedWorld : null);
 
                 if (vertexEditMode && ResolveSelectedMesh() is { } selectedMeshForOverlay)
                     DrawVertexOverlay(selectedMeshForOverlay);
@@ -886,7 +931,7 @@ public class AssetViewer : DockedFrame, ILevelListener
             ImGui.SameLine();
             if (ImGui.Button(LM.Get("GUI_Frame_AssetViewer_ExportObj")))
                 ExportModel(ObjExporter.Export, "obj", GetExportName(mobyDefaultName), GetMobyGroups(moby), moby.Skeleton);
-            
+
             ImGui.BeginGroup();
             ImGui.Text("Id");
             ImGui.Text("Name");
@@ -909,6 +954,9 @@ public class AssetViewer : DockedFrame, ILevelListener
 
             if (moby.Skeleton != null)
                 ImGui.Checkbox(LM.Get("GUI_Frame_AssetViewer_ShowSkeleton"), ref showSkeleton);
+
+            if (moby.Skeleton != null)
+                DrawAnimationPanel(moby);
 
             if (ImGui.BeginChild("moby_bangles_switches", new Vector2(ImGui.GetContentRegionAvail().X, ImGui.GetContentRegionAvail().Y / 2), ImGuiChildFlags.Borders, ImGuiWindowFlags.AlwaysVerticalScrollbar))
             {
@@ -1350,13 +1398,341 @@ public class AssetViewer : DockedFrame, ILevelListener
     /// position attribute, never to the skeleton matrices). The preview's own meshes are drawn at
     /// an identity Transform, so no further placement transform belongs here either.
     /// </summary>
-    private static void DrawSkeleton(ISkeleton skeleton, ImmediateRenderer immediateRenderer)
+    /// <summary>Old-engine (Tools of Destruction) animation controls for the selected Moby - a
+    /// clickable list of the clips THIS Moby actually owns (main.dat 0xD100
+    /// animationCount/animationListPointer, see Loading.Readers.MobyAnimationResolver - NOT a
+    /// bone-count compatibility guess over every clip in the level), plus transport, timeline, and
+    /// a collapsible raw-field debug block.</summary>
+    private void DrawAnimationPanel(Moby moby)
     {
-        foreach (var bone in skeleton.Bones)
+        ISkeleton? skeleton = moby.Skeleton;
+        if (skeleton == null) return;
+
+        if (moby.Animations.Count == 0)
         {
+            ImGui.TextDisabled("This Moby has no animation set of its own.");
+            ImGui.TextDisabled("(main.dat 0xD100 animationCount == 0)");
+            return;
+        }
+
+        var clip = _animationPlayer.Clip;
+
+        // Clip picker on top, transport pinned underneath it. The transport keeps a fixed spot
+        // rather than flowing after a variable-height list, so the play/scrub controls don't move
+        // under the cursor as clips are filtered.
+        float transportHeight = ImGui.GetFrameHeightWithSpacing() * 4f + ImGui.GetTextLineHeightWithSpacing() * 2f;
+        float listHeight = Math.Max(90f, ImGui.GetContentRegionAvail().Y - transportHeight);
+
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        ImGui.InputTextWithHint("##anim_clip_search", $"filter {moby.Animations.Count} clips...", ref _animationClipSearch, 128);
+
+        if (ImGui.BeginChild("anim_clip_list", new Vector2(ImGui.GetContentRegionAvail().X, listHeight), ImGuiChildFlags.Borders))
+        {
+            int shown = 0;
+            foreach (var candidate in moby.Animations)
+            {
+                if (_animationClipSearch.Length > 0 &&
+                    candidate.Name.IndexOf(_animationClipSearch, StringComparison.OrdinalIgnoreCase) < 0)
+                    continue;
+
+                shown++;
+                bool isSelected = ReferenceEquals(candidate, clip);
+                if (ImGui.Selectable($"{candidate.Name}##clip_{candidate.GetHashCode()}", isSelected))
+                {
+                    _animationPlayer.SetClip(candidate);
+                    _animationPlayer.Play();
+                    DisposeSkinnedMeshes();
+                }
+
+                // Frame count / partial-pose marker on the right, dimmed: useful when scanning a
+                // long list for the clip you want, without competing with the name itself.
+                ImGui.SameLine();
+                ImGui.TextDisabled(candidate.Additive ? $"{candidate.NumFrames}f  partial" : $"{candidate.NumFrames}f");
+            }
+
+            if (shown == 0)
+                ImGui.TextDisabled("No clip matches the filter.");
+        }
+        ImGui.EndChild();
+
+        if (clip == null)
+        {
+            ImGui.TextDisabled("Select a clip to play it.");
+            return;
+        }
+
+        DrawAnimationTransport(clip);
+
+        if (ImGui.CollapsingHeader("Animation Debug"))
+        {
+            uint physicalStride = ReLunacy.Engine.Loading.Readers.AnimationReader.PhysicalFrameStride(clip.Header);
+            ImGui.BeginGroup();
+            ImGui.Text("Animation index"); ImGui.Text("Flags"); ImGui.Text("Frames"); ImGui.Text("FPS");
+            ImGui.Text("Header bone count"); ImGui.Text("Skeleton bone count");
+            ImGui.Text("FrameStride (payload)"); ImGui.Text("PhysicalFrameStride"); ImGui.Text("16-bit tracks");
+            ImGui.Text("8-bit tracks"); ImGui.Text("Reference values"); ImGui.Text("ControlPtr");
+            ImGui.Text("FramesPtr"); ImGui.Text("RootMotionPtr");
+            ImGui.EndGroup();
+            ImGui.SameLine();
+            ImGui.BeginGroup();
+            ImGui.Text(clip.Header.animIndex.ToString());
+            ImGui.Text($"0x{clip.Header.flags:X4} (loop={clip.Looping} additive={clip.Additive} packed={clip.Header.IsPacked})");
+            ImGui.Text(clip.NumFrames.ToString());
+            ImGui.Text(clip.FrameRate.ToString("0.###"));
+            ImGui.Text(clip.NumBones.ToString());
+            ImGui.Text(skeleton.Bones.Count.ToString());
+            ImGui.Text($"0x{clip.Header.frameStride:X}");
+            ImGui.Text($"0x{physicalStride:X}");
+            ImGui.Text(clip.Num16BitTracks.ToString());
+            ImGui.Text(clip.Num8BitTracks.ToString());
+            ImGui.Text(clip.Header.numReferenceValues.ToString());
+            ImGui.Text($"0x{clip.Header.controlPtr:X}");
+            ImGui.Text($"0x{clip.Header.framesPtr:X}");
+            ImGui.Text($"0x{clip.Header.rootMotionPtr:X}");
+            ImGui.EndGroup();
+
+            if (clip.NumBones != skeleton.Bones.Count)
+                ImGui.TextColored(new Vector4(0.9f, 0.7f, 0.2f, 1f),
+                    $"Header bone count ({clip.NumBones}) differs from this skeleton's ({skeleton.Bones.Count}) - " +
+                    "bones beyond the clip's own count keep their bind pose (see AnimationPlayer.SamplePose remarks).");
+        }
+    }
+
+    /// <summary>Playback controls for the loaded clip: a transport row, a frame-quantized scrubber,
+    /// and the loop/speed options. Everything that moves the playhead goes through
+    /// AnimationPlayer.SeekToFrame rather than Seek(frame / fps) — the float round-trip through
+    /// Seek could land just short of a frame boundary and step nowhere.</summary>
+    private void DrawAnimationTransport(AnimationClip clip)
+    {
+        bool isPlaying = _animationPlayer.IsPlaying;
+        int lastFrame = Math.Max(clip.NumFrames - 1, 0);
+        int currentFrame = _animationPlayer.CurrentFrame;
+
+        // "###" keeps one stable widget id while the visible label flips between Play and Pause -
+        // with a plain label the id would change on every toggle, which makes ImGui treat it as a
+        // different widget mid-interaction.
+        if (TransportButton("|<##anim_first", "Jump to first frame"))
+        {
+            _animationPlayer.Pause();
+            _animationPlayer.SeekToFrame(0);
+        }
+        ImGui.SameLine();
+        if (TransportButton("<##anim_prev", "Previous frame"))
+        {
+            _animationPlayer.Pause();
+            _animationPlayer.SeekToFrame(currentFrame - 1);
+        }
+        ImGui.SameLine();
+        if (TransportButton(isPlaying ? "Pause###anim_play" : "Play###anim_play", isPlaying ? "Pause playback" : "Play from the current frame", width: 56f))
+        {
+            if (isPlaying) _animationPlayer.Pause();
+            else _animationPlayer.Play();
+        }
+        ImGui.SameLine();
+        if (TransportButton(">##anim_next", "Next frame"))
+        {
+            _animationPlayer.Pause();
+            _animationPlayer.SeekToFrame(currentFrame + 1);
+        }
+        ImGui.SameLine();
+        if (TransportButton(">|##anim_last", "Jump to last frame"))
+        {
+            _animationPlayer.Pause();
+            _animationPlayer.SeekToFrame(lastFrame);
+        }
+        ImGui.SameLine();
+        if (TransportButton("Stop##anim_stop", "Stop and return the model to its bind pose", width: 56f))
+        {
+            _animationPlayer.SetClip(null);
+            DisposeSkinnedMeshes();
+            return;
+        }
+
+        int scrubFrame = currentFrame;
+        ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X);
+        if (ImGui.SliderInt("##anim_frame", ref scrubFrame, 0, lastFrame, $"frame %d / {lastFrame}"))
+        {
+            _animationPlayer.Pause();
+            _animationPlayer.SeekToFrame(scrubFrame);
+        }
+
+        bool loop = _animationPlayer.Loop;
+        if (ImGui.Checkbox("Loop", ref loop)) _animationPlayer.Loop = loop;
+        ImGui.SameLine();
+        float speed = _animationPlayer.Speed;
+        ImGui.SetNextItemWidth(110);
+        if (ImGui.SliderFloat("##anim_speed", ref speed, 0f, 3f, "%.2fx")) _animationPlayer.Speed = speed;
+        ImGui.SameLine();
+        if (ImGui.SmallButton("1x##anim_speed_reset")) _animationPlayer.Speed = 1f;
+
+        ImGui.TextDisabled($"{clip.FrameRate:0.#} fps  -  {clip.DurationSeconds:0.00}s  -  " +
+                           $"{(clip.Looping ? "loops natively" : "no native loop")}{(clip.Additive ? "  -  partial pose" : "")}");
+    }
+
+    private static bool TransportButton(string label, string tooltip, float width = 32f)
+    {
+        bool clicked = ImGui.Button(label, new Vector2(width, 0));
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.DelayShort))
+            ImGui.SetTooltip(tooltip);
+        return clicked;
+    }
+
+    /// <summary>(Re)builds, if needed, one CPU-skinned Bliss mesh per (bangle, mesh) of the selected
+    /// Moby - reusing the SAME Mesh/BasicMeshData objects and cachedRenderables list across frames,
+    /// only ever rewriting their vertex buffers - then re-skins every vertex against the current
+    /// AnimationPlayer pose and pushes the update to the GPU. Called every frame while a clip is
+    /// assigned (see Render); <paramref name="forceRebuild"/> is set on selection/RenderModelMap/
+    /// clip changes (mirrors the static path's IsDirty gate) to throw away stale meshes from the
+    /// PREVIOUS Moby/bangle-visibility selection.
+    ///
+    /// Reuses the shared AssetManager Material and every non-position/normal geometry channel
+    /// (UVs, tangents) unchanged from the static Model - only positions/normals move.</summary>
+    private void UpdateSkinnedVertices(MobyAsset asset, ISkeleton skeleton, bool forceRebuild)
+    {
+        if (forceRebuild || _skinnedMeshes.Count == 0)
+            BuildSkinnedMeshList(asset);
+
+        if (_skinnedMeshes.Count == 0) return;
+
+        var skin = _animationPlayer.SamplePose(skeleton);
+
+        int k = 0;
+        var bangles = asset.Moby.Bangles;
+        var renderMap = asset.RenderModelMap;
+        for (int i = 0; i < bangles.Count; i++)
+        {
+            if (i >= renderMap.Length || !renderMap[i]) continue;
+            foreach (var mesh in bangles[i].Meshes)
+            {
+                if (k >= _skinnedMeshes.Count) break;
+                var (blissMesh, _) = _skinnedMeshes[k++];
+                var vertices = BuildSkinnedVertices(mesh.Geometry, skin);
+                // BasicMeshData.Vertices has no public setter - each vertex is pushed individually
+                // through the mesh's own (public) per-vertex API instead of replacing the backing
+                // array wholesale.
+                for (int v = 0; v < vertices.Length; v++)
+                    blissMesh.SetVertexValueImmediate(v, vertices[v]);
+            }
+        }
+    }
+
+    /// <summary>Disposes any previous animated-preview meshes and builds fresh ones (bind-pose
+    /// vertices - UpdateSkinnedVertices immediately overwrites them) for every visible mesh of
+    /// <paramref name="asset"/>, replacing cachedRenderables wholesale. One-time per selection/
+    /// visibility change, not per frame.</summary>
+    private void BuildSkinnedMeshList(MobyAsset asset)
+    {
+        DisposeSkinnedMeshes();
+        cachedRenderables.Clear();
+
+        if (assetManager is null) return;
+
+        var bangles = asset.Moby.Bangles;
+        var renderMap = asset.RenderModelMap;
+        for (int i = 0; i < bangles.Count; i++)
+        {
+            if (i >= renderMap.Length || !renderMap[i]) continue;
+            foreach (var mesh in bangles[i].Meshes)
+            {
+                var material = assetManager.GetOrBuildMaterial(mesh.Material);
+                var vertices = BuildSkinnedVertices(mesh.Geometry, null);
+                var indices = mesh.Geometry.GetIndices();
+                var data = new BasicMeshData(vertices, indices);
+                var blissMesh = new Mesh<Vertex3D>(graphicsDevice, material, data);
+
+                _skinnedMeshes.Add((blissMesh, data));
+                cachedRenderables.Add(new Renderable(blissMesh, new Transform { Rotation = Quaternion.Identity, Scale = Vector3.One, Translation = Vector3.Zero }));
+            }
+        }
+    }
+
+    /// <summary>CPU-skins one mesh's geometry: for every vertex, blends the BIND-pose position/
+    /// normal across up to 4 (bone, weight) influences from IGeometry.GetJointIndices/GetJointWeights
+    /// (already skeleton-global indices and normalized-ish weights - see MobyReader.ExtractSkinData),
+    /// each transformed by that bone's current skin matrix
+    /// (<c>skin[bone] = InverseBindPose[bone] * animatedWorld[bone]</c> - strips the bind transform,
+    /// reapplies the animated one). A vertex with no valid influence (or <paramref name="skin"/> null,
+    /// used only to build the initial bind-pose buffer before the first real pose is sampled) keeps
+    /// its raw bind-pose position/normal unchanged.
+    ///
+    /// UVs/tangents pass through unskinned (tangents are not re-oriented by the skin rotation - a
+    /// known simplification: shape/position are exactly skinned, specular/normal-map lighting on a
+    /// heavily-rotated bone may look slightly off). Vertex colour is left at opaque white; this
+    /// preview path doesn't carry the vertex-alpha candidate the static path optionally uses.</summary>
+    private static Vertex3D[] BuildSkinnedVertices(IGeometry geometry, Matrix4x4[]? skin)
+    {
+        var positions = geometry.GetVertexPositions();
+        var normals = geometry.GetNormals();
+        var uvs = geometry.GetTextureCoordinates();
+        var tangents = geometry.GetTangents();
+        var jointIndices = geometry.GetJointIndices();
+        var jointWeights = geometry.GetJointWeights();
+
+        int vertexCount = positions.Length / 3;
+        var result = new Vertex3D[vertexCount];
+
+        for (int i = 0; i < vertexCount; i++)
+        {
+            var pos = new Vector3(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+            var normal = normals != null && normals.Length >= i * 3 + 3
+                ? new Vector3(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2])
+                : Vector3.UnitY;
+
+            if (skin != null && jointIndices != null && jointWeights != null)
+            {
+                Vector3 skinnedPos = Vector3.Zero, skinnedNormal = Vector3.Zero;
+                float weightSum = 0f;
+                for (int s = 0; s < 4; s++)
+                {
+                    int bone = jointIndices[i * 4 + s];
+                    float w = jointWeights[i * 4 + s];
+                    if (bone < 0 || w <= 0f || bone >= skin.Length) continue;
+                    var m = skin[bone];
+                    skinnedPos += Vector3.Transform(pos, m) * w;
+                    skinnedNormal += Vector3.TransformNormal(normal, m) * w;
+                    weightSum += w;
+                }
+                if (weightSum > 1e-6f)
+                {
+                    pos = skinnedPos / weightSum;
+                    normal = skinnedNormal / weightSum;
+                }
+            }
+
+            var uv = new Vector2(uvs[i * 2], uvs[i * 2 + 1]);
+            var tan = tangents != null && tangents.Length >= i * 4 + 4
+                ? new Vector4(tangents[i * 4], tangents[i * 4 + 1], tangents[i * 4 + 2], tangents[i * 4 + 3])
+                : new Vector4(1f, 0f, 0f, 1f);
+            var n = normal.LengthSquared() > 1e-12f ? Vector3.Normalize(normal) : Vector3.UnitY;
+
+            result[i] = new Vertex3D(pos, uv, uv, n, tan, Vector4.One);
+        }
+
+        return result;
+    }
+
+    /// <summary>When <paramref name="animatedWorld"/> is supplied (an active animation clip - see
+    /// AnimationPlayer.LastAnimatedWorld), the overlay follows the ANIMATED pose instead of the bind
+    /// pose, per-index-matched to skeleton.Bones. Null draws the plain bind pose exactly as before.</summary>
+    private static void DrawSkeleton(ISkeleton skeleton, ImmediateRenderer immediateRenderer, Matrix4x4[]? animatedWorld = null)
+    {
+        for (int i = 0; i < skeleton.Bones.Count; i++)
+        {
+            var bone = skeleton.Bones[i];
             if (bone.ParentIndex < 0) continue;
-            var parent = skeleton.Bones[bone.ParentIndex];
-            immediateRenderer.DrawLine(parent.WorldBindPose.Translation, bone.WorldBindPose.Translation, Bliss.CSharp.Colors.Color.Red);
+
+            Vector3 childPos, parentPos;
+            if (animatedWorld != null && i < animatedWorld.Length && bone.ParentIndex < animatedWorld.Length)
+            {
+                childPos = animatedWorld[i].Translation;
+                parentPos = animatedWorld[bone.ParentIndex].Translation;
+            }
+            else
+            {
+                childPos = bone.WorldBindPose.Translation;
+                parentPos = skeleton.Bones[bone.ParentIndex].WorldBindPose.Translation;
+            }
+            immediateRenderer.DrawLine(parentPos, childPos, Bliss.CSharp.Colors.Color.Red);
         }
     }
 

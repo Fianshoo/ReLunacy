@@ -35,6 +35,13 @@ public class Moby : IDisposable
     /// code, and a bug in it must not be able to break loading for mobys that don't even reach it.</summary>
     public MobySkeleton? Skeleton { get; private set; }
 
+    /// <summary>Global indices into main.dat section 0xF000 (see
+    /// Loading.Readers.AnimationReader) for the animation clips THIS Moby actually owns - old
+    /// engine only, resolved from OldMoby.animationCount/animationListPointer. Empty for new-engine
+    /// mobys or an old-engine Moby with no animation set (animationCount == 0, the common case).
+    /// See Loading.Readers.MobyAnimationResolver.</summary>
+    public IReadOnlyList<int> AnimationIndices { get; private set; } = [];
+
     public Moby(StreamHelper sh, FileManager fm, int index = 0) // Index only for old mobys
     {
         mobyStream = sh;
@@ -55,6 +62,20 @@ public class Moby : IDisposable
         catch (Exception ex)
         {
             Console.WriteLine($"Failed to read skeleton for moby {TUID:X}: {ex.Message}");
+        }
+
+        // Old engine only: animationListPointer is a main.dat-absolute offset (unlike
+        // skeletonPointer), valid directly against mobyStream since old mobys are read straight
+        // out of main.dat (see MobyReader.ReadMobysOld) - see MobyAnimationResolver's remarks for
+        // the EBOOT/data proof behind this field pair.
+        if (MobyObj is OldMoby oldMobyForAnim)
+        {
+            var f000Section = igFile.QuerySection(AnimationMetadataOld.ID);
+            if (f000Section.id == AnimationMetadataOld.ID)
+            {
+                AnimationIndices = ReLunacy.Engine.Loading.Readers.MobyAnimationResolver.Resolve(
+                    mobyStream, oldMobyForAnim.animationCount, oldMobyForAnim.animationListPointer, f000Section.offset);
+            }
         }
 
         if (!IsOld)

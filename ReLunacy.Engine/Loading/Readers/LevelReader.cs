@@ -17,6 +17,7 @@ public sealed class LevelReader
     private TieReader _tieReader = null!;
     private ZoneReader _zoneReader = null!;
     private FoliageReader _foliageReader = null!;
+    private AnimationReader _animationReader = null!;
     private RegionReader _regionReader = null!;
 
     private Dictionary<ulong, Assets.Mobys.Moby>? _mobys;
@@ -24,6 +25,7 @@ public sealed class LevelReader
     private Dictionary<ulong, Assets.Levels.Zone>? _zones;
     private Assets.Levels.Region? _region;
     private IReadOnlyList<Assets.Foliage.Foliage>? _foliages;
+    private IReadOnlyList<Assets.Animations.AnimationClip>? _animations;
     private IReadOnlyList<Assets.Cubemaps.Cubemap>? _cubemaps;
     private Assets.Lighting.LightingEnvironment? _lightingEnvironment;
 
@@ -40,7 +42,16 @@ public sealed class LevelReader
         progressCallback?.Invoke("Loading Textures & Shaders...", 0.0f);
         _textureShaderLoader.LoadAll();
 
-        _mobyReader = new MobyReader(_fileManager, _materialReader, _debugReader);
+        // Animations load before Mobys: each old-engine Moby resolves its OWN animation set
+        // (main.dat 0xD100 animationCount/animationListPointer, see MobyAnimationResolver) against
+        // this list by global 0xF000 index, so the list has to already exist. Cheap and
+        // independent of everything else (just main.dat's own section table), unlike
+        // textures/shaders above.
+        progressCallback?.Invoke("Loading Animations...", 0.02f);
+        _animationReader = new AnimationReader(_fileManager);
+        _animations = _animationReader.ReadAll();
+
+        _mobyReader = new MobyReader(_fileManager, _materialReader, _debugReader, _animations);
         _tieReader = new TieReader(_fileManager, _materialReader, _debugReader);
 
         progressCallback?.Invoke("Loading Debug Data...", 0.05f);
@@ -112,6 +123,7 @@ public sealed class LevelReader
             zoneDirectionals: _materialReader.WrapZoneLighting(_textureShaderLoader.ZoneDirectionals),
             environmentAverage: _textureShaderLoader.EnvironmentAverage,
             foliages: _foliages,
+            animations: _animations,
             cubemaps: _cubemaps,
             lightingEnvironment: _lightingEnvironment);
     }
@@ -120,6 +132,7 @@ public sealed class LevelReader
     public IReadOnlyDictionary<ulong, Assets.Ties.Tie> Ties => _ties ?? [];
     public IReadOnlyDictionary<ulong, Assets.Levels.Zone> Zones => _zones ?? [];
     public IReadOnlyList<Assets.Foliage.Foliage> Foliages => _foliages ?? [];
+    public IReadOnlyList<Assets.Animations.AnimationClip> Animations => _animations ?? [];
     public IReadOnlyList<Assets.Cubemaps.Cubemap> Cubemaps => _cubemaps ?? [];
     public Assets.Lighting.LightingEnvironment? LightingEnvironment => _lightingEnvironment;
     public Assets.Levels.Region? Region => _region;
@@ -168,6 +181,13 @@ public sealed class LevelData
     /// Loading.Objects.FoliageMetadata.</summary>
     public IReadOnlyList<Assets.Foliage.Foliage> Foliages { get; }
 
+    /// <summary>Every old-engine (Tools of Destruction) animation clip (main.dat 0xF000), in
+    /// on-disk order - a flat, level-wide list. Individual Mobys expose their OWN subset via
+    /// Assets.Mobys.Moby.Animations (main.dat 0xD100 animationCount/animationListPointer, see
+    /// Loading.Readers.MobyAnimationResolver); this list exists for tooling that wants every clip
+    /// regardless of ownership (e.g. a shader/asset browser style view). Empty on the new engine.</summary>
+    public IReadOnlyList<Assets.Animations.AnimationClip> Animations { get; }
+
     /// <summary>Environment cubemap(s), old-engine section 0x5920 (see Loading.Readers.CubemapReader).
     /// Usually one; empty when the level ships only a stub record (kerchu city) or on the new engine.</summary>
     public IReadOnlyList<Assets.Cubemaps.Cubemap> Cubemaps { get; }
@@ -190,6 +210,7 @@ public sealed class LevelData
         IReadOnlyList<Assets.Interfaces.ITexture>? zoneDirectionals = null,
         System.Numerics.Vector3? environmentAverage = null,
         IReadOnlyList<Assets.Foliage.Foliage>? foliages = null,
+        IReadOnlyList<Assets.Animations.AnimationClip>? animations = null,
         IReadOnlyList<Assets.Cubemaps.Cubemap>? cubemaps = null,
         Assets.Lighting.LightingEnvironment? lightingEnvironment = null)
     {
@@ -205,6 +226,7 @@ public sealed class LevelData
         ZoneDirectionals = zoneDirectionals ?? [];
         EnvironmentAverage = environmentAverage;
         Foliages = foliages ?? [];
+        Animations = animations ?? [];
         Cubemaps = cubemaps ?? [];
         LightingEnvironment = lightingEnvironment;
     }

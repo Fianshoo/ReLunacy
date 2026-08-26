@@ -14,6 +14,12 @@ public sealed class Moby : IMoby
     public float Scale { get; init; }
     public ISkeleton? Skeleton { get; init; }
 
+    /// <summary>This Moby's OWN animation clips (old-engine main.dat 0xD100
+    /// animationCount/animationListPointer, resolved via Loading.Readers.MobyAnimationResolver) -
+    /// not every clip whose bone count happens to fit. Empty for new-engine mobys or an old-engine
+    /// Moby with no animation set of its own (most props/statics).</summary>
+    public IReadOnlyList<Animations.AnimationClip> Animations { get; init; } = [];
+
     private readonly Lazy<(Vector3 center, float radius)>? _boundingSphere;
 
     public Moby(
@@ -22,13 +28,15 @@ public sealed class Moby : IMoby
         float scale = 1.0f,
         string? name = null,
         Func<(Vector3, float)>? boundingSphereCalculator = null,
-        ISkeleton? skeleton = null)
+        ISkeleton? skeleton = null,
+        IReadOnlyList<Animations.AnimationClip>? animations = null)
     {
         Id = id;
         Name = name;
         Bangles = bangles ?? throw new ArgumentNullException(nameof(bangles));
         Scale = scale;
         Skeleton = skeleton;
+        Animations = animations ?? [];
         IsLoaded = true;
 
         if (boundingSphereCalculator != null)

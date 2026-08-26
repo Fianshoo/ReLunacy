@@ -11,8 +11,10 @@ public sealed class Bone(string name, int parentIndex, Matrix4x4 worldBindPose, 
     public Matrix4x4 InverseBindPose { get; } = inverseBindPose;
 }
 
-public sealed class Skeleton(IReadOnlyList<IBone> bones, int rootBoneIndex) : ISkeleton
+public sealed class Skeleton(IReadOnlyList<IBone> bones, int rootBoneIndex, float positionScale = 1f, float scaleScale = 1f) : ISkeleton
 {
     public IReadOnlyList<IBone> Bones { get; } = bones;
     public int RootBoneIndex { get; } = rootBoneIndex;
+    public float PositionScale { get; } = positionScale;
+    public float ScaleScale { get; } = scaleScale;
 }
