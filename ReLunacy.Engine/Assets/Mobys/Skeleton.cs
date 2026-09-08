@@ -25,7 +25,8 @@ public sealed class Skeleton(
     float positionScale = 1f,
     float scaleScale = 1f,
     IReadOnlyList<Vector3>? referenceTranslations = null,
-    byte rotationShift = 0) : ISkeleton
+    byte rotationShift = 0,
+    IReadOnlyList<Vector3>? referenceScales = null) : ISkeleton
 {
     public IReadOnlyList<IBone> Bones { get; } = bones;
     public int RootBoneIndex { get; } = rootBoneIndex;
@@ -33,4 +34,12 @@ public sealed class Skeleton(
     public float ScaleScale { get; } = scaleScale;
     public byte RotationShift { get; } = rotationShift;
     public IReadOnlyList<Vector3> ReferenceTranslations { get; } = referenceTranslations ?? [];
+    public IReadOnlyList<Vector3> ReferenceScales { get; } = referenceScales ?? BuildIdentityScales(bones.Count);
+
+    private static IReadOnlyList<Vector3> BuildIdentityScales(int count)
+    {
+        var result = new Vector3[count];
+        Array.Fill(result, Vector3.One);
+        return result;
+    }
 }
