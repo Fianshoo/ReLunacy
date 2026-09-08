@@ -9,10 +9,7 @@ public interface IBone
     Matrix4x4 WorldBindPose { get; }
     Matrix4x4 InverseBindPose { get; }
 
-    /// <summary>Raw D300 bone flags. Kept verbatim so animation/render semantics can be
-    /// reverse-engineered without losing source information. Old-engine ToD data observed so far
-    /// overwhelmingly uses 0 or bit 0; bit 0 is handled by the animation hierarchy as the
-    /// scale-inheritance control.</summary>
+    /// <summary>Raw D300 bone flags preserved verbatim for hierarchy/render semantics.</summary>
     ushort Flags { get; }
 }
 
@@ -23,11 +20,15 @@ public interface ISkeleton
     float PositionScale { get; }
     float ScaleScale { get; }
 
-    /// <summary>Raw D300 +0x11 fixed-point shift used by the native old-engine decoder for the
-    /// quantized rotation channel. Retained explicitly for round-tripping/editing even though a
-    /// uniform quaternion scale cancels when the decoded quaternion is normalized.</summary>
+    /// <summary>Raw D300 +0x11 fixed-point shift used by the native quantized rotation channel.</summary>
     byte RotationShift { get; }
 
     /// <summary>Reference-pose local translations decoded from D300 +0x14.</summary>
     IReadOnlyList<Vector3> ReferenceTranslations { get; }
+
+    /// <summary>
+    /// Reference-pose local scale extracted from the bind hierarchy. Animation scale channels are
+    /// absolute local scale components; components not authored by a clip retain these values.
+    /// </summary>
+    IReadOnlyList<Vector3> ReferenceScales { get; }
 }
