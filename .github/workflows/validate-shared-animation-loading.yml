@@ -1,0 +1,46 @@
+name: Validate shared animation loading
+
+on:
+  push:
+    branches: [ "feature/shared-animation-loading" ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Wire animation catalog into LevelReader
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('ReLunacy.Engine/Loading/Readers/LevelReader.cs')
+          s = p.read_text()
+          s = s.replace('    private FoliageReader _foliageReader = null!;\n    private RegionReader _regionReader = null!;', '    private FoliageReader _foliageReader = null!;\n    private AnimationReader _animationReader = null!;\n    private RegionReader _regionReader = null!;', 1)
+          s = s.replace('    private IReadOnlyList<Assets.Foliage.Foliage>? _foliages;\n    private IReadOnlyList<Assets.Cubemaps.Cubemap>? _cubemaps;', '    private IReadOnlyList<Assets.Foliage.Foliage>? _foliages;\n    private IReadOnlyList<Assets.Animations.AnimationClip>? _animations;\n    private IReadOnlyList<Assets.Cubemaps.Cubemap>? _cubemaps;', 1)
+          needle = '        _textureShaderLoader.LoadAll();\n\n        _mobyReader = new MobyReader(_fileManager, _materialReader, _debugReader);'
+          repl = '        _textureShaderLoader.LoadAll();\n\n        progressCallback?.Invoke("Loading Animations...", 0.02f);\n        _animationReader = new AnimationReader(_fileManager);\n        _animations = _animationReader.ReadAll();\n\n        _mobyReader = new MobyReader(_fileManager, _materialReader, _debugReader, _animationReader);'
+          assert needle in s
+          s = s.replace(needle, repl, 1)
+          needle = '    public IReadOnlyList<Assets.Foliage.Foliage> Foliages => _foliages ?? [];\n    public IReadOnlyList<Assets.Cubemaps.Cubemap> Cubemaps => _cubemaps ?? [];'
+          repl = '    public IReadOnlyList<Assets.Foliage.Foliage> Foliages => _foliages ?? [];\n    public IReadOnlyList<Assets.Animations.AnimationClip> Animations => _animations ?? [];\n    public IReadOnlyList<Assets.Cubemaps.Cubemap> Cubemaps => _cubemaps ?? [];'
+          assert needle in s
+          s = s.replace(needle, repl, 1)
+          p.write_text(s)
+      - run: dotnet restore ReLunacy.sln
+      - run: dotnet build ReLunacy.sln -c Debug --no-restore
+      - name: Commit validated wiring
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ReLunacy.Engine/Loading/Readers/LevelReader.cs
+          git commit -m "animation: wire shared catalog into level loading"
+          git push
