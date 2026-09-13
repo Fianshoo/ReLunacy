@@ -8,8 +8,9 @@ using ReLunacy.Utility.Localization;
 namespace ReLunacy.Core.Frames.Modals;
 
 /// <summary>Lets the user pick which categories (Mobys/Ties/UFrags) to include before exporting
-/// the whole loaded level to a single .glb - see LevelExporter for why this is glTF-only (OBJ has
-/// no node hierarchy or mesh instancing, both of which whole-level export depends on).</summary>
+/// the whole loaded level to a single .glb, or as an external world-building asset library. The
+/// library mode keeps a full Reference GLB plus one self-contained GLB per reusable asset/chunk and
+/// an assets.json manifest suitable for Promethean/custom editor indexing.</summary>
 public class LevelExportModal : Modal
 {
     protected override ImGuiWindowFlags WindowFlags { get; set; } = ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoDocking;
@@ -41,6 +42,13 @@ public class LevelExportModal : Modal
             StartExport();
             isOpen = false;
         }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Export Asset Library"))
+        {
+            StartAssetLibraryExport();
+            isOpen = false;
+        }
         ImGui.EndDisabled();
 
         ImGui.SameLine();
@@ -57,6 +65,21 @@ public class LevelExportModal : Modal
 
         ExportRunner.Run(LM.Get("GUI_Frame_LevelExportModal_ExportingTitle"), path, directory,
             progress => LevelExporter.Export(path, levelName, EntityManager.Singleton, options, progress));
+    }
+
+    private void StartAssetLibraryExport()
+    {
+        string levelName = ExportPaths.SanitizeFileName(GameLibraryScanner.GetLevelNameFromPath(Program.ProvidedPath));
+        string directory = Path.Combine(Program.EditorPath, "Exported", "AssetLibraries", levelName);
+        string manifestPath = Path.Combine(directory, "assets.json");
+        var options = new AssetLibraryExportOptions(
+            ExportReference: true,
+            ExportMobys: exportMobys,
+            ExportTies: exportTies,
+            ExportUFrags: exportUFrags);
+
+        ExportRunner.Run("Exporting Asset Library", manifestPath, directory,
+            progress => AssetLibraryExporter.Export(directory, levelName, EntityManager.Singleton, options, progress));
     }
 
     public override void RenderAsWindow(double deltaTime)
