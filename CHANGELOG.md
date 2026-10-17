@@ -16,6 +16,7 @@ Because the European date format is better, please keep date format like this: `
 - The editor window now opens maximized by default and remembers last size and maximization state between sessions.
 - Added per-zone render toggles (`Render menu > Zones`)
 - Added animation support by @Fianshoo in PRs #58, #59 and #60
+- The non-opaque polygon offset is now the game's own function (`TodPolygonOffset`, ToD EBOOT 0x00537090) instead of two magic numbers. No visual change: the old -87 / -0.33972 pair is that function at x = 68.158. Notes on what the new engine does instead are in the class summary.
 - 
 
 ## [v0.05.1](https://github.com/VELD-Dev/ReLunacy/releases/0.05.1) - 28-08-2026

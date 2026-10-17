@@ -32,10 +32,10 @@ public sealed unsafe class VulkanRenderer : IDisposable
     private const uint VertexStride = VulkanSceneCapture.FloatsPerVertex * sizeof(float); // 104
     private const int TexPerMaterial = 5;
 
-    // Polygon offset for the non-opaque pass, matching the real game (same values in AssetManager,
-    // which applies them on the Bliss path).
-    private const float NonOpaqueDepthBias = -87f;
-    private const float NonOpaqueSlopeScaledDepthBias = -0.33972f;
+    // Polygon offset for the non-opaque pass: the game's own function (TodPolygonOffset) at the
+    // parameter the editor was tuned on, i.e. -86.97 units and a -0.33972 slope factor.
+    private static readonly float NonOpaqueDepthBias = TodPolygonOffset.Compute(TodPolygonOffset.CapturedParameter).Units;
+    private static readonly float NonOpaqueSlopeScaledDepthBias = TodPolygonOffset.Compute(TodPolygonOffset.CapturedParameter).Factor;
 
     // uBoneBase[gl_InstanceIndex] is the skinned instance's bone-palette region offset (see
     // TrySetAnimatedInstance); 0 for every non-animating instance, which is the shared identity
@@ -1235,7 +1235,7 @@ void main() { o = vec4(uColor.rgb, 1.0); }";
         var rasterCullNone = new VkPipelineRasterizationStateCreateInfo { polygonMode = VkPolygonMode.Fill, cullMode = VkCullModeFlags.None, frontFace = VkFrontFace.CounterClockwise, lineWidth = 1f };
 
         // Polygon offset for every non-opaque draw, matching the game's decal/overlay offset (see
-        // AssetManager.OverlayDepthBias). Without it, Overlay-mode surfaces (decals, posters, grime)
+        // TodPolygonOffset). Without it, Overlay-mode surfaces (decals, posters, grime)
         // z-fight with the wall they're painted on. Applied to the WBOIT accumulate, additive and
         // Soft-Edge depth-prepass pipelines; Opaque and Cutout draw unbiased.
         var rasterBiased = new VkPipelineRasterizationStateCreateInfo { polygonMode = VkPolygonMode.Fill, cullMode = VkCullModeFlags.None, frontFace = VkFrontFace.CounterClockwise, lineWidth = 1f, depthBiasEnable = true, depthBiasConstantFactor = NonOpaqueDepthBias, depthBiasSlopeFactor = NonOpaqueSlopeScaledDepthBias, depthBiasClamp = 0f };
